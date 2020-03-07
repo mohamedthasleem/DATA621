@@ -1,2 +1,2 @@
 # DATA621
-DATA621_Visual_Analytics
+DATA 621 - Business Analytics and Data Mining
