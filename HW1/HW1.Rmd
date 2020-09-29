@@ -1,0 +1,213 @@
+---
+title: DATA 621 - Homework 1
+subtitle: "Fall 2020 - Business Analytics and Data Mining"
+author: "Mohamed Thasleem, Kalikul Zaman"
+date: "09/27/2020"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    df_print: paged
+    theme: united
+    highlight: tango
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+---
+<br>
+
+## INTRODUCTION
+
+Exploration and building multiple linear regression model with Baseball game data, the objective is to predict the number of wins for the team from the given data set
+
+```{r libs, message=FALSE, warning=FALSE, echo=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(corrplot)
+library(caret)
+library(DMwR)
+```
+
+## 1. DATA EXPLORATION
+
+Lets look in to the data to get some insights like summary, how the data got distributed and corelation between variables
+
+```{r, echo=FALSE}
+# Read in the training data
+training <- read.csv("C:/Users/aisha/Dropbox/CUNY/Semester5_Fall2020/DATA621_BusinessAnalytics_DataMining/HW1/moneyball-training-data.csv") %>%
+  select(-INDEX) # Dropping meaningless index
+# Read in the evaluation data
+evaluation <- read.csv("C:/Users/aisha/Dropbox/CUNY/Semester5_Fall2020/DATA621_BusinessAnalytics_DataMining/HW1/moneyball-evaluation-data.csv")
+```
+
+### Data Summary
+```{r ,message=FALSE, warning=FALSE}
+nrow(training)
+summary(training)
+```
+
+
+
+### Density Exploration
+```{r , fig.height = 6, fig.width = 11, echo=FALSE, warning=FALSE, message=FALSE}
+training %>%
+  gather(variable, value, TARGET_WINS:TEAM_FIELDING_DP) %>%
+  ggplot(., aes(value)) + 
+  geom_density() + 
+  facet_wrap(~variable, scales ="free", ncol = 4) +
+  labs(x = element_blank(), y = element_blank())
+```
+
+### Box-Plot
+
+```{r, fig.height = 6, fig.width = 11, echo=FALSE, warning=FALSE, message=FALSE}
+# Prepare data for ggplot
+gather_df <- training %>% 
+  gather(key = 'variable', value = 'value')
+# Boxplots for each variable
+ggplot(gather_df, aes(variable, value)) + 
+  geom_boxplot() + 
+  facet_wrap(. ~variable, scales='free', ncol=6)
+```
+
+### Correlations
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+mat<-as.matrix(cor(training[-1],use="pairwise.complete.obs"))
+corrplot(mat,tl.cex=.5)
+```
+
+### Missing Value
+
+Observed few variables has missing values, based on the percentage of missing value TEAM_BATTING_HBP has almost >90% of missing value and this can be removed. The other variables TEAM_BATTING_SO, TEAM_BASERUN_SB, TEAM_BASERUN_CS, TEAM_PITCHING_SO and TEAM_FIELDING_DP has considerable missing values, those can be set to median values.
+
+## 2. DATA PREPARATION
+
+### Identifying the missing value
+
+```{r ,  warning=FALSE, message=FALSE}
+
+missing <- colSums(training %>% sapply(is.na))
+missing_pct <- round(missing / nrow(training) * 100, 2)
+stack(sort(missing_pct, decreasing = TRUE))
+```
+
+### Fixing Missing Value
+
+TEAM_BATTING_HBP has been removed due to most missing value
+The rest of the varaibles EAM_BATTING_SO, TEAM_BASERUN_SB, TEAM_BASERUN_CS, TEAM_PITCHING_SO and TEAM_FIELDING_DP can be fixed by setting as median
+
+```{r ,  warning=FALSE, message=FALSE}
+training <- training %>% 
+   mutate_all(~ifelse(is.na(.), median(., na.rm = TRUE), .))
+training <- subset(training, select = -c(TEAM_BATTING_HBP) )
+```
+
+### Transform
+
+Centering and scaling was used to transform individual predictors in the dataset using the caret library. The density diagrams of the transformed data shows that some variables were transformed from skewedness to normality or close to normality.
+
+```{r, fig.height = 6, fig.width = 11, echo=FALSE, warning=FALSE, message=FALSE}
+library(caret)
+library(reshape)
+trans = preProcess(training, 
+                   c("BoxCox", "center", "scale"))
+predictorsTrans = data.frame(
+      trans = predict(trans, training))
+      
+#Density plot of tranformed data
+dataTrans = melt(predictorsTrans)
+ggplot(dataTrans, aes(x= value)) + 
+    geom_density(fill='gray') + facet_wrap(~variable, scales = 'free')       
+```
+
+## 3. BUILD MODELS
+
+Model 1 - All variables
+
+```{r, fig.height = 5, fig.width = 11, echo=FALSE, warning=FALSE, message=FALSE}
+mtd_final <- predictorsTrans
+
+model1 <- lm(trans.TARGET_WINS ~., mtd_final)
+summary(model1)
+```
+Model 2 
+
+Significant variables
+
+```{r, fig.height = 6, fig.width = 11, echo=FALSE, warning=FALSE, message=FALSE}
+model2 <- lm(trans.TARGET_WINS ~ trans.TEAM_BATTING_H  + trans.TEAM_BATTING_3B  + trans.TEAM_BATTING_HR  + trans.TEAM_BATTING_BB + trans.TEAM_BATTING_SO + trans.TEAM_BASERUN_SB + trans.TEAM_PITCHING_SO + trans.TEAM_PITCHING_H + trans.TEAM_PITCHING_SO + trans.TEAM_FIELDING_E + trans.TEAM_FIELDING_DP, mtd_final)
+summary(model2)
+```
+Model 3
+
+Further reducing the variables(TEAM_PITCHING_SO and TEAM_BATTING_SO are having high correlation, TEAM_BATTING_H and TEAM_PITCHING_H are also having high correlation, TEAM_BATTING_SO and TEAM_PITCHING_SO are also having high correlation)
+
+```{r, fig.height = 6, fig.width = 11, echo=FALSE, warning=FALSE, message=FALSE}
+model3 <- lm(trans.TARGET_WINS ~ trans.TEAM_BATTING_H  + trans.TEAM_BATTING_3B  + trans.TEAM_BATTING_HR  + trans.TEAM_BATTING_BB + trans.TEAM_BATTING_SO + trans.TEAM_BASERUN_SB  + trans.TEAM_FIELDING_E + trans.TEAM_FIELDING_DP, mtd_final)
+summary(model3)
+```
+
+## 4. SELECT MODELS
+
+Lets look in to the residuals plot to get more information and how these models are performing
+
+### Model 1 
+
+```{r, fig.height = 5, fig.width = 11 ,echo=FALSE, warning=FALSE, message=FALSE}
+par(mfrow=c(2,2))
+res <- residuals(model3)
+plot(model1)
+mtext("Model 1", side=3, outer=TRUE, line=-1)
+```
+
+### Model 2
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+par(mfrow=c(2,2))
+res <- residuals(model3)
+plot(model2)
+mtext("Model 2", side=3, outer=TRUE, line=-1)
+```
+
+### Model 3
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.height = 6, fig.width = 11}
+par(mfrow=c(2,2))
+res <- residuals(model3)
+plot(model3)
+mtext("Model 3", side=3, outer=TRUE, line=-1)
+```
+
+
+```{r}
+Model <- c("Model 1", "Model 2", "Model 3")
+Standard_Error <- c(0.8337, 0.3092, 0.8337)
+Multiple_R_squared <- c(0.3092, 0.3042, 0.3003)
+Adjusted_R_squared <- c(0.3049, 0.3011, 0.2979)
+
+df1 <- data.frame(Model, Standard_Error, Multiple_R_squared, Adjusted_R_squared)
+df1
+```
+
+### ANOVA Model Comparison
+
+```{r}
+
+anova(model1, model2, model3)
+```
+
+
+From the three models, Model3 seems to be a good fit by looking in to the residual plot observations and values obtained by the lm function and it has less significant p value.
+
+
+
+
+
+
+
+
+
+
+
