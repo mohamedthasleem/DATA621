@@ -1,0 +1,213 @@
+---
+title: DATA 621 - Homework 3
+subtitle: "Fall 2020 - Business Analytics and Data Mining"
+author: "Mohamed Thasleem, Kalikul Zaman"
+date: "11/01/2020"
+output:
+  pdf_document:
+    toc: yes
+---
+
+## Introduction
+
+In this homework assignment, you will explore, analyze and model a data set containing information on crime for various neighborhoods of a major city. Each record has a response variable indicating whether or not the crime rate is above the median crime rate (1) or not (0).
+
+## 1. Data Download
+
+Librarires and download the classification output data set
+
+```{r ,message=FALSE, warning=FALSE}
+library(tidyverse)
+library(psych)
+library(corrplot)
+library(RColorBrewer)
+library(knitr)
+library(MASS)
+library(caret)
+library(kableExtra)
+library(ResourceSelection)
+library(pROC)
+```
+```{r ,message=FALSE, warning=FALSE, echo=FALSE}
+
+vn <- c("zn", "indus", "chas", "nox", "rm", "age", "dis", "rad", "tax", "ptratio", "lstat", "medv", "target")
+dscrptn <- c("proportion of residential land zoned for large lots (over 25000 square feet)", "proportion of non-retail business acres per suburb", "a dummy var. for whether the suburb borders the Charles River (1) or not (0)", "nitrogen oxides concentration (parts per 10 million)", "average number of rooms per dwelling", "proportion of owner-occupied units built prior to 1940", "weighted mean of distances to five Boston employment centers", "index of accessibility to radial highways", "full-value property-tax rate per $10,000", "pupil-teacher ratio by town","lower status of the population (percent)", "median value of owner-occupied homes in $1000s", "whether the crime rate is above the median crime rate (1) or not (0)")
+kable(cbind(vn, dscrptn), col.names = c("Variable Name", "Short Description")) %>% 
+  kable_styling(full_width = T)
+```
+```{r ,message=FALSE, warning=FALSE}
+path <- "https://raw.githubusercontent.com/mohamedthasleem/DATA621/master/HW3"
+crime_train <- read.csv(paste0(path,"/crime-training-data_modified.csv"))
+crime_test <- read.csv(paste0(path,"/crime-evaluation-data_modified.csv"))
+```
+## 2. Data Exploration
+
+The dataset contains 13 variables and 466 observations with no missing values. The variable chas, is a dummy variable and the rest are numerical variables. Finding the  mean, standard deviation, skewness and other information for statistical analysis.
+
+Based on the histogram plot below,the varialbe medv, and rm are normally distributed and bi-modal distribution of the variables indus, rad and tax.
+
+The following plots show how predictors are distributed between a positive target variable (areas with crime rates higher than the median, i.e. blue) and a negative target variable (areas with crime rates below the median, i.e. red). What we are looking for is variables that show way to split data into two groups.
+
+```{r ,message=FALSE, warning=FALSE}
+# Statistics
+crime_train %>% 
+  mutate(chas = as.factor(chas), target = as.factor(target)) %>% glimpse() %>% describe()
+# Distribution of the varaibles
+crime_train %>%
+  gather(key, value, -c(target, chas)) %>%
+  ggplot(aes(value)) +
+  geom_histogram(binwidth = function(x) 2 * IQR(x) / (length(x)^(1/3)), fill="gray") +
+  facet_wrap(~ key, scales = 'free', ncol = 3) +
+  theme_minimal()
+# Box-plot
+crime_train %>%
+  dplyr::select(-chas) %>% 
+  gather(key, value, -target) %>% 
+  mutate(key = factor(key),
+         target = factor(target)) %>% 
+  ggplot(aes(x = key, y = value)) +
+  geom_boxplot(aes(fill = target)) +
+  facet_wrap(~ key, scales = 'free', ncol = 3) +
+  scale_fill_manual(values=c("#968c83", "#d6d2c4")) +
+  theme_minimal()
+
+crime_train %>% 
+  cor(.) %>%
+  corrplot(., method = "color", type = "upper", tl.col = "black", diag = FALSE)
+
+# Top correlation 
+kable(sort(cor(dplyr::select(crime_train, target, everything()))[,1], decreasing = T),
+      col.names = c("Correlation")) %>% kable_styling(full_width = F)
+
+```
+
+## 3. Data Preparation
+
+The variance inflation factor which quantifies the extent of correlation between one predictor and the other predictors in a model. Some of the variables are skewed, have outliers or follow a bi-modal distribution. By doing this analysism, we can remove the high scrore values also we transform some of the variables to account for its variances with respect to target variable.
+
+```{r ,message=FALSE, warning=FALSE}
+# Multicollinear variables
+kable((car::vif(glm(target ~. , data = crime_train))), col.names = c("VIF Score")) %>%  
+  kable_styling(full_width = F)
+
+# Transoformation of the variables. 
+crime_train_trans <- crime_train %>%
+  dplyr::select(-tax) %>% 
+  mutate(age = log(age), lstat = log(lstat), zn = zn^2, rad = rad^2, nox = I(nox^2))
+
+```
+
+## 4. Build Models
+
+Three different models were built to see the best performance
+
+Model 1 - All Varaibles
+
+Model 2 - with transformed variables
+
+Model 3 - Stepwise Selection variables
+
+__Model 1__
+
+We use all original variables. Out of 7 1n 12 variables have statistically significant p-values. In the goodness-of-fit test, the null hypothesis is rejected due to low p-value.
+
+```{r ,message=FALSE, warning=FALSE}
+#model 1 with all original variables
+model1 <- glm(target ~ ., family = "binomial", crime_train)
+summary(model1)
+
+#fit test
+hoslem.test(crime_train$target, fitted(model1))
+
+```
+
+__Model 2__
+
+We will use our transformed variables, but same results as of Model 1. Moreover, the p-value is low again thus this model’s goodness of fit null hypothesis is rejected as well.
+
+Since the transformed variables yielded a model that performs worse than the model with original variables, we will apply a box-cox transformation to all the variables to see if it performs better. As seen previously, most of our dataset has many skewed variables. When an attribute has a normal distribution but is shifted, this is called a skew. The distribution of an attribute can be shifted to reduce the skew and make it more normal The Box Cox transform can perform this operation (assumes all values are positive).
+Even though this model took less Fisher Scoring iterations than other models, it too yielded similar results and low p-value as the other two models.
+
+```{r ,message=FALSE, warning=FALSE}
+
+#model 2 with transformed variables. 
+model2 <- glm(target ~ ., family = "binomial", crime_train_trans)
+summary(model2)
+
+#fit test
+hoslem.test(crime_train$target, fitted(model1))
+# boxcox transformation use caret package
+crime_boxcox <- preProcess(crime_train, c("BoxCox"))
+cb_transformed <- predict(crime_boxcox, crime_train)
+model <- glm(target ~ ., family = "binomial", cb_transformed)
+summary(model)
+
+#fit model
+hoslem.test(crime_train$target, fitted(model))
+
+```
+
+__Model 3__
+
+Finally for our third model, we will use the stepwise selection from the MASS package. This model yields the best performance so far. It has the lowest AIC Score and all of the variables have significant p-value. As such we will select this model to make prediction
+
+```{r ,message=FALSE, warning=FALSE}
+
+# model 3 stepwise selection of variables 
+model3 <- stepAIC(model1, direction = "both", trace = FALSE)
+summary(model3)
+
+# goodness of fit test
+hoslem.test(crime_train$target, fitted(model3))
+# comparing all models using different measures
+c1 <- confusionMatrix(as.factor(as.integer(fitted(model1) > .5)),
+                      as.factor(model1$y), positive = "1")
+c2 <- confusionMatrix(as.factor(as.integer(fitted(model2) > .5)),
+                      as.factor(model2$y), positive = "1")
+c3 <- confusionMatrix(as.factor(as.integer(fitted(model3) > .5)),
+                      as.factor(model3$y), positive = "1")
+
+roc1 <- roc(crime_train$target,  predict(model1, crime_train,
+                                         interval = "prediction"))
+roc2 <- roc(crime_train$target,  predict(model2, crime_train,
+                                         interval = "prediction"))
+roc3 <- roc(crime_train$target,  predict(model3, crime_train,
+                                         interval = "prediction"))
+
+```
+
+## 5. Select Models
+
+We have compared various metrics for all three models. We calculate all three models’ accuracy, classification error rate, precision, sensitivity, specificity, F1 score, AUC, and confusion matrix. Even though model 1 performs better in every metrics, the difference is very small. We will pick model 3 with stepwise variable selection because it has the lowest AIC score and all variables have high p-values
+
+
+__Model 3 Scrores best in AIC Score__
+
+```{r ,message=FALSE, warning=FALSE}
+## 4. Select Model
+
+metrics1 <- c(c1$overall[1], "Class. Error Rate" = 1 - as.numeric(c1$overall[1]),
+              c1$byClass[c(1, 2, 5, 7)], AUC = roc1$auc)
+metrics2 <- c(c2$overall[1], "Class. Error Rate" = 1 - as.numeric(c2$overall[1]),
+              c2$byClass[c(1, 2, 5, 7)], AUC = roc2$auc)
+metrics3 <- c(c3$overall[1], "Class. Error Rate" = 1 - as.numeric(c3$overall[1]),
+              c3$byClass[c(1, 2, 5, 7)], AUC = roc3$auc)
+
+kable(cbind(metrics1, metrics2, metrics3), col.names = c("Model 1", "Model 2", "Model 3")) %>% 
+  kable_styling(full_width = T)
+
+# plotting roc curve of model 3
+plot(roc(crime_train$target,  predict(model3, crime_train, interval = "prediction")),
+     print.auc = TRUE)
+
+# prepare evaualtion dataset
+crime_test <- crime_test %>% 
+  mutate(chas = as.factor(chas))
+
+# prediction
+predict <- predict(model3, crime_test, interval = "prediction")
+eval <- table(as.integer(predict > .5))
+eval
+```
+
+__Model 3 (stepwise) Scrores best in AIC Score__ considered as a best model.
