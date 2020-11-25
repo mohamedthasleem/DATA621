@@ -1,0 +1,333 @@
+---
+title: DATA 621 - Homework 4
+subtitle: "Fall 2020 - Business Analytics and Data Mining"
+author: "Mohamed Thasleem, Kalikul Zaman"
+date: "11/22//2020"
+output:
+  pdf_document:
+    toc: yes
+---
+
+## Introduction
+
+In this homework assignment, we will explore, analyze and model a data set containing approximately 8000 records representing a customer at an auto insurance company. Each record has two response variables. The first response variable, `TARGET_FLAG`, is a `1` or a `0`. A “**1**” means that the person was in a car crash. A zero means that the person was not in a car crash. The second response variable is `TARGET_AMT`. This value is zero if the person did not crash their car. But if they did crash their car, this number will be a value greater than zero. 
+ 
+The objective is to build multiple linear regression and binary logistic regression models on the training data to predict the probability that a person will crash their car and also the amount of money it will cost if the person does crash their car. Only variables given in the project will be used unless new variables are derived from the original variables. Below is a short description of the variables of interest in the data set: 
+
+```{r ,message=FALSE, warning=FALSE}
+# load libraries
+library(ggpubr)
+library(stringr)
+library(corrplot)
+library(RColorBrewer)
+library(mice)
+library(kableExtra)
+library(car)
+library(MASS)
+library(caret)
+library(pROC)
+library(ggplot2)
+library(reshape2)
+library(knitr)
+library(tidyverse)
+library(psych)
+library(ggthemes)
+```
+
+## 1. Data Download
+
+```{r ,message=FALSE, warning=FALSE}
+# download data
+path <- "https://raw.githubusercontent.com/mohamedthasleem/DATA621/master/HW4"
+insurance_train <- read.csv(paste0(path,"/insurance_training_data.csv"))
+insurance_test <- read.csv(paste0(path,"/insurance-evaluation-data.csv"))
+```
+
+## 2. Data Exploration
+
+Previewing the data, We will first look at the summary statistics for the data
+
+```{r ,message=FALSE, warning=FALSE}
+head(insurance_train)
+glimpse(insurance_train)
+summary(insurance_train)
+```
+Density are useful to show how the data is distributed in the dataset.
+In the histogram plot below, we see several variables have high number of zeros. AGE is the only variable that is normally distributed. Rest of the variables show some skewness. We will perform Box-Cox transformation on these variables.
+
+```{r ,message=FALSE, warning=FALSE}
+ntrain<-select_if(insurance_train, is.numeric)
+ntrain %>%
+  keep(is.numeric) %>%                    
+  gather() %>%                             
+  ggplot(aes(value)) + facet_wrap(~ key, scales = "free") + geom_density()
+```
+
+```{r}
+ggplot(melt(insurance_train), aes(x=factor(variable), y=value)) + 
+  facet_wrap(~variable, scale="free") + 
+  geom_boxplot()
+```
+The numerical summaries and visualizations associated with the dataset. As with any data, some details to this dataset including the numerous amounts of missing data, as well as skew in the histograms. We will work on the missing value on upcoming sections
+
+## 3. Data Preparation
+
+Impute data for Missing value, changing some datatype for data analysis and build correlation plot, VIF values are calculated
+
+```{r ,message=FALSE, warning=FALSE}
+# change data type
+insurance_train_dist <- insurance_train %>% 
+  dplyr::select(-INDEX) %>% 
+  mutate(TARGET_FLAG = as.factor(TARGET_FLAG),
+         KIDSDRIV = as.factor(KIDSDRIV),
+         HOMEKIDS = as.factor(HOMEKIDS),
+         PARENT1 = as.factor(PARENT1),
+         CLM_FREQ = as.factor(CLM_FREQ),
+         INCOME = str_replace_all(INCOME, "[\\$,]", ""),
+         HOME_VAL = str_replace_all(HOME_VAL, "[\\$,]", ""),
+         BLUEBOOK = str_replace_all(BLUEBOOK, "[\\$,]", ""),
+         OLDCLAIM = str_replace_all(OLDCLAIM, "[\\$,]", ""),
+         OLDCLAIM = as.integer(OLDCLAIM),
+         BLUEBOOK = as.integer(BLUEBOOK),
+         HOME_VAL = as.integer(HOME_VAL),
+         INCOME = as.integer(INCOME))
+
+# change data type of some variables for visualization
+distribution <- insurance_train_dist %>% 
+  dplyr::select(c("TARGET_FLAG", "AGE", "YOJ", "INCOME", "HOME_VAL", "TRAVTIME", "BLUEBOOK", "TIF", "OLDCLAIM", "MVR_PTS", "CAR_AGE")) %>% 
+  gather(key, value, -TARGET_FLAG) %>% 
+  mutate(value = as.integer(value),
+         key = as.factor(key),
+         TARGET_FLAG = as.factor(TARGET_FLAG))
+
+# change all variable's data type for correlation
+insurance_corr <- data.frame(lapply(insurance_train_dist, function(x) as.numeric(as.factor(x))))
+
+# top correlated variables                              
+a <- sort(cor(dplyr::select(insurance_corr, TARGET_FLAG, everything()))[,1], decreasing = T)
+b <- sort(cor(dplyr::select(insurance_corr, TARGET_AMT, everything()))[,1], decreasing = T)
+kable(cbind(a, b), col.names = c("TARGET_FLAG", "TARGET_AMT")) %>% 
+  kable_styling(full_width = F) %>% 
+  add_header_above(c(" ", "Correlation" = 2))
+
+# correlation plot
+corrplot(cor(dplyr::select(drop_na(insurance_corr), everything())), 
+         method = "circle", 
+         type = "full",
+         col = brewer.pal(n = 26, name = "Paired"),
+         number.cex = .7, tl.cex = .7,
+         tl.col = "black", tl.srt = 45)
+
+```
+The correlation table and plot above, we see MVR_PTS, CLM_FREQ, and OLDCLAIM are the most positively correlated variables with our response variables. Whereas, URBANICITY is the most negatively correlated variable. All other are weakly correlated.
+
+
+```{r ,message=FALSE, warning=FALSE, echo=FALSE, include=FALSE}
+# imputating train data
+init <- mice(insurance_train_dist)
+meth <- init$method
+predM <- init$predictorMatrix
+predM[, c("TARGET_FLAG", "TARGET_AMT")] <- 0 #this code will remove the variable as a predictor but still will be imputed
+insurance_impute <- mice(insurance_train_dist, method = 'rf', predictorMatrix=predM)
+insurance_imputed <- complete(insurance_impute)
+print(paste0("Missing value after imputation: ", sum(is.na(insurance_imputed))))
+
+# preparing evaluation data
+insurance_test <- insurance_test %>% 
+  dplyr::select(-c(TARGET_FLAG, TARGET_AMT, INDEX)) %>% 
+  mutate(KIDSDRIV = as.factor(KIDSDRIV),
+         HOMEKIDS = as.factor(HOMEKIDS),
+         PARENT1 = as.factor(PARENT1),
+         CLM_FREQ = as.factor(CLM_FREQ),
+         INCOME = str_replace_all(INCOME, "[\\$,]", ""),
+         HOME_VAL = str_replace_all(HOME_VAL, "[\\$,]", ""),
+         BLUEBOOK = str_replace_all(BLUEBOOK, "[\\$,]", ""),
+         OLDCLAIM = str_replace_all(OLDCLAIM, "[\\$,]", ""),
+         OLDCLAIM = as.integer(OLDCLAIM),
+         BLUEBOOK = as.integer(BLUEBOOK),
+         HOME_VAL = as.integer(HOME_VAL),
+         INCOME = as.integer(INCOME))
+
+# imputating evaluation data
+init <- mice(insurance_test)
+meth <- init$method
+predM <- init$predictorMatrix
+insurance_eval_impute <- mice(insurance_test, method = 'rf', predictorMatrix=predM)
+insurance_eval_imputed <- complete(insurance_eval_impute)
+insurance_eval_imputed <- data.frame(lapply(insurance_eval_imputed, function(x) as.numeric(as.factor(x))))
+print(paste0("Missing value after imputation: ", sum(is.na(insurance_eval_imputed))))
+```
+
+```{r ,message=FALSE, warning=FALSE}
+# check for multicollinearity
+insurance_vif <- data.frame(lapply(insurance_imputed, function(x) as.numeric(as.factor(x))))
+kable((car::vif(glm(TARGET_FLAG ~. , data = insurance_vif))), col.names = c("VIF Score")) %>%  #remove tax for high vif score
+  kable_styling(full_width = F)
+```
+
+The multicollinearity check, VIF score is at a conservative level for all variables
+
+## 4. Build Models
+
+We will be building three different multiple linear regression models and three different binary logistic regression models using the original dataset, the imputed dataset, forward and backward selected variables and a boxcox transformed dataset to see which one yields the best performance.
+
+### Model 1 : Multiple Linear Regression
+
+The p-value below shows that the probability of this variables to be irrelevant is very low. R-squared is 0.15, which means this model explains 15% of the data’s variation. This is not an good model
+
+
+```{r ,message=FALSE, warning=FALSE}
+# original value model
+insurance_corr <- dplyr::select(insurance_corr, -"TARGET_FLAG")
+model1 <- lm(TARGET_AMT ~ ., insurance_corr)
+summary(model1)
+```
+
+### Model 2 : Multiple Linear Regression (VIF)
+
+Considering the data from VIF, The p-value below shows that the probability of this variables to be irrelevant is very low. R-squared is 0.15, which means this model explains 15% of the data’s variation. This is not an good model.
+
+```{r ,message=FALSE, warning=FALSE}
+
+
+# imputed model
+insurance_vif <- dplyr::select(insurance_vif, -"TARGET_FLAG")
+model2 <- lm(TARGET_AMT ~ ., insurance_vif)
+summary(model2)
+
+```
+
+### Model 3 : Multiple Linear Regression (Stepwise Transformed)
+
+We see improved p-value for several variables, The p-value below shows that the probability of this variables to be irrelevant is very low. Lastly, R-squared is 0.15, which means this model explains 15% of the data’s variation, seems to be good model
+
+```{r ,message=FALSE, warning=FALSE}
+
+# stepwise transformed model
+model3 <- stepAIC(model2, direction = "both", trace = FALSE)
+summary(model3)
+```
+
+### Model 4: Multiple Linear Regression (Box Cox)
+
+The p-value below shows that the probability of this variables to be irrelevant is very low. Lastly, R-squared is 0.22, which means this model explains 22% of the data’s variation. Overall, this looks best model.
+
+```{r ,message=FALSE, warning=FALSE}
+
+# boxcox transformation model
+insurance_boxcox <- preProcess(insurance_vif, c("BoxCox"))
+in_bc_transformed <- predict(insurance_boxcox, insurance_vif)
+model4 <- lm(TARGET_AMT ~ ., in_bc_transformed)
+summary(model4)
+```
+
+### Model 1: Binary Logistic Regression
+
+This model shows many variables with significant p-value. We will observe with following model whether AIC score improves.
+
+```{r ,message=FALSE, warning=FALSE}
+# original value model
+logit_data <- data.frame(lapply(insurance_imputed, function(x) as.numeric(as.factor(x)))) %>% 
+  mutate(TARGET_FLAG = as.factor(TARGET_FLAG)) %>% 
+  dplyr::select(-"TARGET_AMT")
+  
+model5 <- glm(TARGET_FLAG ~ ., family = "binomial", logit_data)
+summary(model5)
+```
+
+### Model 2: Binary Logistic Regression (Stepwise)
+
+This model’s variables selection is better with better p-value. However AIC score has not improved.
+
+```{r ,message=FALSE, warning=FALSE}
+
+# stepwise transformed model
+model6 <- stepAIC(model5, direction = "both", trace = FALSE)
+summary(model6)
+```
+
+### Model 3: Binary Logistic Regression (Box Cox)
+
+This model too shows many variables with significant p-value. and the AIC score so far
+
+```{r ,message=FALSE, warning=FALSE}
+# boxcox transformation model
+insurance_boxcox1 <- preProcess(logit_data, c("BoxCox"))
+in_bc_transformed1 <- predict(insurance_boxcox1, logit_data)
+model7 <- glm(TARGET_FLAG ~ ., family = "binomial", in_bc_transformed1)
+summary(model7)
+
+```
+
+## 5. Select Models
+
+__Multiple Linear Regression Metrics__
+
+```{r ,message=FALSE, warning=FALSE}
+# predict
+predict <- predict(model5, insurance_eval_imputed, interval = "prediction")
+eval <- table(as.integer(predict > .5))
+print(paste(eval[1], "car crash has not happened", "and", eval[2], "car crash has happened"))
+# comparing all binary logistic models using various measures
+a1 <- mean((summary(model1))$residuals^2)
+a2 <- mean((summary(model2))$residuals^2)
+a3 <- mean((summary(model3))$residuals^2)
+a4 <- mean((summary(model4))$residuals^2)
+a5 <- rbind(a1, a2, a3, a4)
+ 
+b1 <- summary(model2)$r.squared
+b2 <- summary(model3)$r.squared
+b3 <- summary(model1)$r.squared
+b4 <- summary(model4)$r.squared
+b5 <- rbind(b1, b2, b3, b4)
+
+c1 <- summary(model1)$fstatistic
+c2 <- summary(model2)$fstatistic
+c3 <- summary(model3)$fstatistic
+c4 <- summary(model4)$fstatistic
+c5 <- rbind(c1, c2, c3, c4)
+
+mlr_metrics <- data.frame(cbind(a5, b5, c5), row.names = c("Model 1", "Model 2", "Model 3", "Model 4"))
+colnames(mlr_metrics) <- c("MSE", "R-Squared", "value", "numdf", "dendf")
+kable(mlr_metrics) %>% 
+  kable_styling(full_width = T) %>% 
+  add_header_above(c(" ", " " = 2, "F-Statistic" = 3))
+
+# residual plot
+par(mfrow=c(2,2))
+plot(model4)
+
+# prediction
+prediction <- predict(model4, insurance_eval_imputed, interval = "prediction")
+```
+
+The variance of residuals are not uniform which indicates our explanatory variable is not an complete picture of data, also not normally distributed, this is not good model selection.
+
+
+__Binary Logistic Regression Metrics__
+
+
+
+```{r ,message=FALSE, warning=FALSE}
+# comparing all binary logistic models using various measures
+c1 <- confusionMatrix(as.factor(as.integer(fitted(model5) > .5)), as.factor(model5$y), positive = "1")
+c2 <- confusionMatrix(as.factor(as.integer(fitted(model6) > .5)), as.factor(model6$y), positive = "1")
+c3 <- confusionMatrix(as.factor(as.integer(fitted(model7) > .5)), as.factor(model7$y), positive = "1")
+
+roc1 <- roc(logit_data$TARGET_FLAG,  predict(model5, logit_data, interval = "prediction"))
+roc2 <- roc(logit_data$TARGET_FLAG,  predict(model6, logit_data, interval = "prediction"))
+roc3 <- roc(logit_data$TARGET_FLAG,  predict(model7, logit_data, interval = "prediction"))
+
+metrics1 <- c(c1$overall[1], "Class. Error Rate" = 1 - as.numeric(c1$overall[1]), c1$byClass[c(1, 2, 5, 7)], AUC = roc1$auc)
+metrics2 <- c(c2$overall[1], "Class. Error Rate" = 1 - as.numeric(c2$overall[1]), c2$byClass[c(1, 2, 5, 7)], AUC = roc2$auc)
+metrics3 <- c(c3$overall[1], "Class. Error Rate" = 1 - as.numeric(c3$overall[1]), c3$byClass[c(1, 2, 5, 7)], AUC = roc3$auc)
+
+kable(cbind(metrics1, metrics2, metrics3), col.names = c("BLR Model 1", "BLR Model 2", "BLR Model 3"))  %>% 
+  kable_styling(full_width = T)
+
+# plotting roc curve of model 3
+plot(roc(logit_data$TARGET_FLAG,  predict(model5, logit_data, interval = "prediction")), print.auc = TRUE, main = "BLR Model 1" )
+```
+
+Upon all three models’ accuracy, classification error rate, precision, sensitivity, specificity, F1 score, AUC, and confusion matrix. Even though all models yield similar metrics value, BLR model 1 has the highest AUC value. We will pick Model 1 on BLR with imputed values for our prediction
+
