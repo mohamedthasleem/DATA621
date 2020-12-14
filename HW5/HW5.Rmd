@@ -1,0 +1,325 @@
+---
+title: DATA 621 - Homework 5
+subtitle: "Fall 2020 - Business Analytics and Data Mining"
+author: "Mohamed Thasleem, Kalikul Zaman"
+date: "12/24/2020"
+output:
+  pdf_document:
+    toc: yes
+---
+
+## Introduction
+
+In this homework assignment, we will be exploring, analyzing and model a data set containing information on approximately 12,000 commercially available wines. The variables are mostly related to the chemical properties of the wine being sold. The response variable is the number of sample cases of wine that were purchased by wine distribution companies after sampling a wine. These cases would be used to provide tasting samples to restaurants and wine stores around the United States. The more sample cases purchased, the more likely is a wine to be sold at a high end restaurant. A large wine manufacturer is studying the data in order to predict the number of wine cases ordered based upon the wine characteristics. If the wine manufacturer can predict the number of cases, then that manufacturer will be able to adjust their wine offering to maximize sales.
+
+```{r ,message=FALSE, warning=FALSE, include=FALSE}
+#load libraries
+library(tidyverse)
+library(forcats)
+library(modelr)
+library(skimr)
+library(knitr)
+library(kableExtra)
+library(broom)
+library(caTools)
+library(pscl)
+library(grid)
+library(gridExtra)
+library(GGally)
+library(mice)
+library(car)
+library(MASS)
+library(caret)
+library(corrplot)
+library(reshape)
+library(ggthemes)
+library(moments)
+library(qqplotr)
+library(gridExtra)
+library(geoR)
+library(caret)
+library(pROC)
+library(DataExplorer)
+library(visdat)
+library(janitor)
+library(pander)
+library(dplyr)
+```
+
+## 1. Data Download
+
+```{r ,message=FALSE, warning=FALSE}
+# download data
+path <- "https://raw.githubusercontent.com/mohamedthasleem/DATA621/master/HW5"
+df <- read.csv(paste0(path,"/wine-training-data.csv"),header = TRUE)
+eval <- read.csv(paste0(path,"/wine-evaluation-data.csv"),header = TRUE)
+
+```
+
+## 2. Data Exploration
+
+Previewing the data, We will first look at the summary statistics for the data
+
+```{r ,message=FALSE, warning=FALSE}
+head(df)
+glimpse(df)
+summary(df)
+```
+
+```{r ,message=FALSE, warning=FALSE}
+dfc <- df
+mylevels <- names(df[,2:15])
+summary_plot <- df %>%
+  gather() %>% 
+  mutate(facet = factor(key, levels=mylevels)) %>% 
+  ggplot(aes(value)) +  
+  facet_wrap(~ facet, scales = "free") + 
+  geom_histogram()  + theme_pander()  + 
+  theme(axis.text.y = element_text(size=7),
+        strip.text.x = element_text(size= 9),
+        axis.text.x = element_text(size=6),
+        plot.title = element_text(hjust = 0.5, size=10),
+        axis.title.y = element_text(size=8)) + 
+  labs(x=NULL, title="Wine Data Histograms")
+summary_plot
+```
+
+The distirubution of varialbes mostly on normal. Acid index is right-skewed. When we log it, its distribution appears normal. We maintain acid index as a logged variable. STARS appears in the dataset with a lot of NA entries. With the assumption that an unrated wine is overlooked and is likely to remain overlooked, we assume that rated wines would be more desirable. We imputed all NAs as 0 in our dataset. Below, we see that a simple linear model based on STARS as the independent variable can be improved when the STARS variable is augmented by 0s in place of NA
+
+
+```{r ,message=FALSE, warning=FALSE}
+vis_miss(df)
+vis_cor(df)
+```
+
+The correlations between many of our various variables are quite low for most of our variables. In our corrplot, only STARS, label index, alcohol and acid index have any visible correlation with our target. Acid index is negatively correlated, indicting that consumers don't like acidic wines
+
+__Data Preprocessing__
+
+__Impute Missing Value__
+
+Imputing the missing value and applying some pre-processing steps to STARS, Acid Index and LabelAppeal variables
+
+```{r ,message=FALSE, warning=FALSE}
+# Factors
+df <- df %>% 
+  dplyr::select(-"ï..INDEX") %>% 
+  mutate(STARS = factor(STARS)) %>% 
+  mutate(STARS = fct_explicit_na(STARS,na_level = "0")) %>% 
+  mutate(LabelAppeal = factor(LabelAppeal)) %>%
+  mutate(AcidIndex = if_else(AcidIndex <= 7,4L,AcidIndex)) %>%
+  mutate(AcidIndex = if_else(AcidIndex == 8 | AcidIndex == 9 ,3L,AcidIndex)) %>%
+  mutate(AcidIndex = if_else(AcidIndex == 10 | AcidIndex == 15 ,2L,AcidIndex)) %>%
+  mutate(AcidIndex = if_else(AcidIndex == 16 | AcidIndex == 17 | AcidIndex == 11 | AcidIndex == 12 | AcidIndex == 13 |  AcidIndex == 14 ,1L,AcidIndex)) %>%
+  mutate(AcidIndex = factor(AcidIndex))  
+
+```
+
+
+## 3. Data Preparation
+
+Analysing different factors using the varibles for prediction models
+
+```{r ,message=FALSE, warning=FALSE}
+tmp_data <- mice(df,maxit=3, method='pmm',seed=20, print=F)
+df <- complete(tmp_data,1)
+
+df$FixedAcidity <- abs(df$FixedAcidity)
+df$VolatileAcidity <- abs(df$VolatileAcidity) 
+df$CitricAcid <- abs(df$CitricAcid)
+df$ResidualSugar <- abs(df$ResidualSugar)
+df$Chlorides <- abs(df$Chlorides) 
+df$FreeSulfurDioxide <- abs(df$FreeSulfurDioxide)
+df$TotalSulfurDioxide <- abs(df$TotalSulfurDioxide)
+df$Sulphates <- abs(df$Sulphates)
+df$Alcohol <- abs(df$Alcohol)
+
+str(df)
+summary(df)
+
+bp1 <- ggplot(df, aes(LabelAppeal,TARGET)) + geom_boxplot() + 
+  theme(axis.title = element_text(size=10), 
+        plot.title = element_text(hjust= 0.5, size = 10)) +
+  labs(title = 'LabelAppeal')
+  
+bp2 <- ggplot(df, aes(STARS,TARGET)) + geom_boxplot() + 
+  theme(axis.title = element_text(size=10), 
+        plot.title = element_text(hjust= 0.5, size = 10)) +
+  labs(title = 'STARS')
+  
+bp3 <- ggplot(df, aes(AcidIndex,TARGET)) + geom_boxplot() + 
+  theme(axis.title = element_text(size=10), 
+        plot.title = element_text(hjust= 0.5, size = 10)) +
+  labs(title = 'AcidIndex')  
+  
+grid.arrange(bp1, bp2, bp3, ncol = 3)
+```
+
+The corrplot shows lack of corelation, There does not seem to be any particularly strong correlation between variables.
+
+```{r ,message=FALSE, warning=FALSE}
+train_data <- dfc[, -1]
+
+corrplot(as.matrix(cor(train_data, use = "pairwise.complete")),method = "circle")
+
+train_index <- createDataPartition(df$TARGET, p = .7, list = FALSE, times = 1)
+train <- df[train_index,]
+test <- df[-train_index,]
+
+```
+
+```{r ,message=FALSE, warning=FALSE}
+evaluate_model <- function(model, test_df, yhat = FALSE){
+  temp <- data.frame(yhat=c(0:8), TARGET = c(0:8), n=c(0))
+  
+  if(yhat){
+    test_df$yhat <- yhat
+  } else {
+    test_df$yhat <- round(predict.glm(model, newdata=test_df, type="response"), 0)
+  }
+  
+  test_df <- test_df %>%
+    group_by(yhat, TARGET) %>%
+    tally() %>%
+    mutate(accuracy = ifelse(yhat > TARGET, "Over", ifelse(yhat < TARGET, "Under", "Accurate"))) %>%
+    mutate(cases_sold = ifelse(yhat > TARGET, TARGET, yhat) * n,
+           glut = ifelse(yhat > TARGET, yhat - TARGET, 0) * n,
+           missed_opportunity = ifelse(yhat < TARGET, TARGET - yhat, 0) * n) %>%
+    mutate(net_cases_sold = cases_sold - glut,
+           adj_net_cases_sold = cases_sold - glut - missed_opportunity)
+  
+  results <- test_df %>%
+    group_by(accuracy) %>%
+    summarise(n = sum(n)) %>%
+    spread(accuracy, n)
+  
+  accurate <- results$Accurate
+  over <- results$Over
+  under <- results$Under
+  
+  cases_sold <- sum(test_df$cases_sold)
+  net_cases_sold <- sum(test_df$net_cases_sold)
+  adj_net_cases_sold <- sum(test_df$adj_net_cases_sold)
+  missed_opportunity <- sum(test_df$missed_opportunity)
+  glut <- sum(test_df$glut)
+  
+  confusion_matrix <- test_df %>%
+    bind_rows(temp) %>%
+    group_by(yhat, TARGET) %>%
+    summarise(n = sum(n)) %>%
+    spread(TARGET, n, fill = 0)
+  
+  return(list("confusion_matrix" = confusion_matrix, "results" = results, "df" = test_df, "accurate" = accurate, "over" = over, "under" = under, "cases_sold" = cases_sold, "net_cases_sold" = net_cases_sold, "adj_net_cases_sold" = adj_net_cases_sold, "glut" = glut, "missed_opportunity" = missed_opportunity))
+}
+
+```
+
+## 4. Build Models
+
+The train and test data is splitted by 70/30 ration, the approach to modeling was to make strong use of the factor variable and limited use of the continuous variables given the uncertainty around the negative values. When continuous values were employed the absolute value of the variable is utilized in the model. We also employed three varieties of models in our analysis: Linear, Poisson, Negative Binomial Zero-Inflated.
+
+A manually iterative process was employed to narrow the models down to the five contenders. Model summaries and confusion matrix data is presented for each model. The model evaluation section then picks a winner based upon a variety of factors, including: prediction ability (can the model predict all relevant value ranges), accuracy, AIC, BIC and LogLik.
+
+__MODEL 1 - POISSON 1__
+
+```{r ,message=FALSE, warning=FALSE}
+mod1 <- glm(TARGET ~ STARS + AcidIndex + LabelAppeal + Alcohol, family = poisson, train)
+summary(mod1)
+
+pred <- predict(mod1, newdata=test, type='response')
+predRound <- as.factor(round(pred,0)-1)
+testData <- as.factor(test$TARGET)
+levels(predRound) <- c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "0")
+levels(testData) <- c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10")
+cm <- confusionMatrix(predRound, testData)
+cm$overall[1]
+
+```
+
+
+__MODEL 2 - LINEAR 1__
+
+```{r ,message=FALSE, warning=FALSE}
+mod2 <- lm(TARGET ~ STARS + AcidIndex + LabelAppeal + Alcohol, data = train)
+summary(mod2)
+
+mod2_results <- evaluate_model(mod2, test)
+
+pred <- predict(mod2, newdata=test)
+predRound <- as.factor(round(pred,0))
+levels(predRound) <- levels(as.factor(test$TARGET))
+confusionMatrix(predRound, as.factor(test$TARGET))
+```
+
+__MODEL 3 - POISSON 2__
+
+```{r ,message=FALSE, warning=FALSE}
+mod3 <- glm(TARGET ~ STARS + AcidIndex + LabelAppeal +  VolatileAcidity, family = poisson, train)
+summary(mod3)
+
+pred <- predict(mod3, newdata=test, type='response')
+predRound <- as.factor(round(pred,0)-1)
+testData <- as.factor(test$TARGET)
+levels(predRound) <- c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "0")
+levels(testData) <- c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10")
+cm <- confusionMatrix(predRound, testData)
+cm$overall[1]
+
+```
+
+__MODEL 4 - LINEAR 2__
+
+```{r ,message=FALSE, warning=FALSE}
+
+mod4 <- lm(TARGET ~ STARS + AcidIndex + LabelAppeal +  VolatileAcidity, data = train)
+summary(mod4)
+
+pred <- predict(mod4, newdata=test)
+predRound <- as.factor(round(pred,0))
+levels(predRound) <- levels(as.factor(test$TARGET))
+confusionMatrix(predRound, as.factor(test$TARGET))
+```
+
+__MODEL 5 - Zero-Inflated Negative Binomial (ZINB)__
+
+```{r ,message=FALSE, warning=FALSE}
+
+mod5 <- zeroinfl(TARGET ~ STARS  + LabelAppeal + AcidIndex + TotalSulfurDioxide + VolatileAcidity, data=train, dist="negbin")
+
+summary(mod5)
+
+pred <- predict(mod5, newdata=test, type='response')
+predRound <- as.factor(round(pred,0))
+testData <- as.factor(test$TARGET)
+cm <- confusionMatrix(predRound, testData)
+cm$overall[1]
+
+```
+
+## 5. Select Model
+
+Based on multiple model performance, the selection process is simple. Only the Zero-Inflated Negative Binomial model (ZINB) was able to meet or prediction ability criteria. Other models doesnt perform good to predict the zero values.
+
+The ZINB model also outperformed all other models in terms of confusion matrix accuracy, AIC, BIC, logLik and length of model name. Summary results are set forth below.
+
+```{r ,message=FALSE, warning=FALSE}
+
+# Select Models
+
+mod1_result <- cbind(AIC=AIC(mod1), BIC = BIC(mod1), loglik=logLik(mod1))
+mod2_result <- cbind(AIC=AIC(mod2),BIC = BIC(mod2), loglik=logLik(mod2))
+mod3_result <- cbind(AIC=AIC(mod3),BIC = BIC(mod3), loglik=logLik(mod3))
+mod4_result <- cbind(AIC=AIC(mod4), BIC = BIC(mod4), loglik=logLik(mod4))
+mod5_result <- cbind(AIC=AIC(mod5), BIC = BIC(mod5), loglik=logLik(mod5))
+model_comp <- rbind(mod1_result, mod2_result,mod3_result,mod4_result,mod5_result)
+  
+  
+rownames(model_comp) <- c("mod1_result","mod2_result","mod3_result","mod4_result","mod5_result")
+
+model_comp
+
+```
+
+## 6. Conclusion
+
+ZINB (Zero-Inflated Negative Binomial model) Model Outperformed in missing value scenario when compared to Poisson and Linear Model
