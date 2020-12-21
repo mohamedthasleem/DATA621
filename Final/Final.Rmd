@@ -1,0 +1,213 @@
+---
+title: DATA 621 - Final Project
+subtitle: "Fall 2020 - Business Analytics and Data Mining"
+author: "Mohamed Thasleem, Kalikul Zaman"
+date: "12/24/2020"
+output:
+  pdf_document:
+    toc: yes
+---
+
+
+```{r ,message=FALSE, warning=FALSE, include=FALSE}
+#load libraries
+library(tidyverse)
+library(Ecdat)
+library(corrplot)
+library(ggplot2)
+library(VIF)
+library(car)
+library(olsrr)
+library(MASS)
+library(relaimpo)
+library(DAAG)
+library(crossval)
+library(bootstrap)
+library(PerformanceAnalytics)
+```
+
+
+```{r ,message=FALSE, warning=FALSE}
+# download data
+
+cigar.data <- Cigarette
+summary(cigar.data)
+str(cigar.data)
+cigar.data
+
+chart.Correlation(cigar.data[,3:9], histogram = TRUE, pch = 19)
+```
+
+
+```{r ,message=FALSE, warning=FALSE}
+sapply(cigar.data[,3:9], function(x) sum(is.na(x)))
+
+
+cor.mtest <- function(mat, ...) {
+  mat <- as.matrix(mat)
+  n <- ncol(mat)
+  p.mat<- matrix(NA, n, n)
+  diag(p.mat) <- 0
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      tmp <- cor.test(mat[, i], mat[, j], ...)
+      p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+    }
+  }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+
+p.mat <- cor.mtest(cigar.data[,3:9])
+
+cigar.cor <- cor(cigar.data[,3:9])
+corrplot(cigar.cor, method = "number", type = "upper",
+         tl.cex = 0.9, number.cex = 0.6,  order="hclust",  diag = FALSE,
+         addCoef.col = "black", tl.col = "black", tl.srt = 45, 
+         # Significància
+         p.mat = p.mat, sig.level = 0.05, insig = "blank")
+
+```
+
+
+```{r ,message=FALSE, warning=FALSE}
+
+set.seed(1)
+cigar.data2 <- cigar.data[,3:9]
+
+cigar.train <- sample_frac(tbl = cigar.data2, replace = FALSE, size = 0.80)
+cigar.test <- anti_join(cigar.data2, cigar.train)
+
+
+fit <- lm(packpc ~ ., data = cigar.train)
+summary(fit)
+confint(fit)
+
+vif(fit)
+```
+
+```{r ,message=FALSE, warning=FALSE}
+p1 <- ggplot(cigar.train, aes(cigar.train[,1], residuals(fit))) +
+    geom_point() + geom_smooth(color = "blue")
+p2 <- ggplot(cigar.train, aes(cigar.train[,2], residuals(fit))) +
+  geom_point() + geom_smooth(color = "blue")
+p3 <- ggplot(cigar.train, aes(cigar.train[,3], residuals(fit))) +
+  geom_point() + geom_smooth(color = "blue")
+p4 <- ggplot(cigar.train, aes(cigar.train[,4], residuals(fit))) +
+  geom_point() + geom_smooth(color = "blue")
+p5 <- ggplot(cigar.train, aes(cigar.train[,5], residuals(fit))) +
+  geom_point() + geom_smooth(color = "blue")
+p6 <- ggplot(cigar.train, aes(cigar.train[,6], residuals(fit))) +
+  geom_point() + geom_smooth(color = "blue")
+p7 <- ggplot(cigar.train, aes(cigar.train[,7], residuals(fit))) +
+  geom_point() + geom_smooth(color = "blue")
+
+p7
+
+ols_plot_cooksd_bar(fit)
+
+```
+```{r ,message=FALSE, warning=FALSE}
+summary(step(fit, trace = 0))
+fit2 <- lm(packpc ~ cpi + sqrt(tax) + sqrt(avgprs), data = cigar.train)
+
+summary(stepAIC(fit, trace = 0))
+summary(stepAIC(fit2, trace = 0))
+
+anova(fit, fit2)
+
+AIC(fit, fit2)
+
+```
+
+```{r ,message=FALSE, warning=FALSE}
+calc.relimp(fit2, type = c("lmg", "last", "first", "pratt", "betasq"), rela = T)
+
+boot <- boot.relimp(fit2, b = 1000, type = c("lmg", "last", "first", "pratt"), 
+                    rank = TRUE, diff = TRUE, rela = TRUE)
+booteval.relimp(boot) 
+
+plot(booteval.relimp(boot,sort=TRUE)) 
+
+```
+
+```{r ,message=FALSE, warning=FALSE}
+
+ggplot(cigar.data2, aes(x = packpc, y = avgprs)) + geom_point() +
+  geom_smooth(method = "lm", se = F) + geom_smooth(col = "red") + theme_classic()
+
+```
+```{r ,message=FALSE, warning=FALSE}
+
+# First, we need to define the function for RMSE performance
+rmse <- function(y, h){
+return(sqrt(mean((y - h) ^2)))}
+
+performance <- data.frame()
+
+for (d in 1:12){
+  poly.fit <- lm(packpc  ~ cpi + poly(tax, degree = d) + poly(avgprs, degree = d), data = cigar.train)
+  performance <- rbind(performance, data.frame(Degree = d, 
+                                Data = "Training",
+                                RMSE = rmse(cigar.train$packpc, predict(poly.fit))))
+  performance <- rbind(performance, data.frame(Degree = d, 
+                                Data = "Test",
+                                RMSE = rmse(cigar.train$packpc, predict(poly.fit,
+                                                      newdata = cigar.test))))
+} 
+
+# Final plot
+ggplot(performance, aes(x = Degree, y = RMSE, linetype = Data)) + 
+  geom_point() + geom_line() + ggtitle(label = 'RMSE of training set and test set')
+
+```
+
+```{r ,message=FALSE, warning=FALSE}
+
+fit3 <- lm(packpc ~ cpi + poly(tax, degree = 10) + poly(avgprs, degree = 2),
+           data = cigar.train)
+summary(fit3)
+
+AIC(fit2, fit3)
+
+```
+
+```{r ,message=FALSE, warning=FALSE}
+
+pred <- predict(fit3, newdata = cigar.test)
+rmse <- sqrt(sum((exp(pred) - cigar.test$packpc)^2)/length(cigar.test$packpc))
+c(RMSE = rmse, R2 = summary(fit3)$r.squared)
+
+plot(cigar.test$packpc, pred)
+abline(0, 1, col = "red")
+
+```
+
+```{r ,message=FALSE, warning=FALSE}
+
+cv.lm(cigar.train, fit3, m = 10)
+
+```
+
+
+```{r ,message=FALSE, warning=FALSE}
+
+theta.fit <- function(x,y){lsfit(x,y)}
+theta.predict <- function(fit,x){cbind(1,x)%*%fit$coef}
+
+# Definition of matrices
+fit4 <- lm(packpc ~ cpi + poly(tax, degree = 10) + poly(avgprs, degree = 2), data = cigar.data2)
+X <- as.matrix(cigar.data2[c("cpi","tax","avgprs")])
+
+y <- as.matrix(cigar.data2[c("packpc")])
+
+cor(y, fit4$fitted.values)**2 
+
+results <- crossval(X, y, theta.fit, theta.predict, ngroup = 10)
+
+cor(y, results$cv.fit)**2 
+```
+
+
+
+
